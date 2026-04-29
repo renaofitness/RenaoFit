@@ -1,51 +1,53 @@
 // js/modules/auth.js
-import { supabase, fetchWithRetry } from '../core/supabase.js'
+import { supabase } from '../core/supabase.js'
 
 export async function loginOrRegister(phone, name) {
-  // Нормализуем телефон
   const cleanPhone = phone.replace(/\D/g, '')
-  if (cleanPhone.length < 10) throw new Error('Неверный телефон')
+  if (cleanPhone.length < 10) throw new Error('Введите 10 цифр телефона')
   
-  // Сначала проверим, существует ли пользователь с таким телефоном в profiles
-  const { data: existingProfile } = await supabase
-    .from('profiles')
-    .select('id')
-    .eq('phone', cleanPhone)
-    .maybeSingle()
+  // Генерируем email и пароль из телефона
+  const email = `${cleanPhone}@gmail.com`
+  const password = `${cleanPhone}simplepass`
   
-  let authUser
+  // Пробуем войти
+  let { data, error } = await supabase.auth.signInWithPassword({
+    email: email,
+    password: password
+  })
   
-  if (existingProfile) {
-    // Вход: нужно получить auth user по email (Supabase требует email, создадим фейк)
-    const fakeEmail = `${cleanPhone}@phone.local`
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: fakeEmail,
-      password: cleanPhone.slice(-6)
+  // Если вход не удался (пользователь не существует), регистрируем
+  if (error && error.message.includes('Invalid login credentials')) {
+    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+      email: email,
+      password: password,
+      options: {
+        data: {
+          phone: cleanPhone,
+          name: name
+        }
+      }
     })
-    if (error) throw new Error('Ошибка входа: ' + error.message)
-    authUser = data.user
-  } else {
-    // Регистрация
-    const fakeEmail = `${cleanPhone}@phone.local`
-    const { data, error } = await supabase.auth.signUp({
-      email: fakeEmail,
-      password: cleanPhone.slice(-6),
-      options: { data: { phone: cleanPhone, name: name } }
-    })
-    if (error) throw new Error('Ошибка регистрации: ' + error.message)
-    authUser = data.user
+    
+    if (signUpError) throw new Error('Ошибка регистрации: ' + signUpError.message)
     
     // Создаём профиль
-    const { error: profileError } = await supabase.from('profiles').insert({
-      id: authUser.id,
-      phone: cleanPhone,
-      name: name,
-      is_admin: false
-    })
-    if (profileError) throw new Error('Ошибка создания профиля: ' + profileError.message)
+    const { error: profileError } = await supabase
+      .from('profiles')
+      .insert([{
+        id: signUpData.user.id,
+        phone: cleanPhone,
+        name: name,
+        is_admin: false
+      }])
+    
+    if (profileError) throw new Error('Ошибка профиля: ' + profileError.message)
+    
+    return signUpData.user
+  } else if (error) {
+    throw new Error('Ошибка входа: ' + error.message)
   }
   
-  return authUser
+  return data.user
 }
 
 export async function logout() {
@@ -53,16 +55,15 @@ export async function logout() {
 }
 
 export async function getCurrentUser() {
-  const { data: { user }, error: userError } = await supabase.auth.getUser()
-  if (userError || !user) return null
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return null
   
-  const { data: profile, error: profileError } = await supabase
+  const { data: profile } = await supabase
     .from('profiles')
     .select('*')
     .eq('id', user.id)
     .single()
   
-  if (profileError) return null
   return profile
 }
 
